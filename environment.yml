@@ -1,0 +1,16 @@
+# Software environment used for the manuscript experiments (NVIDIA RTX 5090).
+# conda env create -f environment.yml && conda activate olsf-trs && pip install -e .
+name: olsf-trs
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.7.1
+      - numpy>=1.24,<3
+      - scipy>=1.11,<2
+      - matplotlib>=3.6,<4
+      - pytest>=7,<9
+      - gurobipy==12.0.0
