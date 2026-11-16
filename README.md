@@ -1,40 +1,107 @@
-# Data generation
+# OLSF-TRS
 
-Generate warehouse instances with a fixed seed. Run from the repository root:
+Code for *A scalable learning framework unlocking order fulfillment capacity for
+tote-handling robotic systems*.
+
+OLSF-TRS makes order, tote and robot decisions in sequence. It uses a BQ-NCO
+Transformer, role attention and a centralized GRU critic. Training combines
+expert imitation learning and MAPPO. Baselines include IPPO, C-SGH, R³ and G³.
+
+The simulator supports multi-tote and rack-climbing systems, Poisson order
+arrivals, and configurations S-1–S-9 and L-1–L-15. The objective is total tote
+movements: retrievals plus returns.
+
+## Environment
+
+`environment.yml` sets up Python 3.11, PyTorch 2.7.1 with CUDA 12.8 and Gurobi 12.0.0:
 
 ```bash
-python data/generate_instances.py --instances S-1 --seeds 42 --output outputs/data
-
-python data/generate_instances.py --instances all --systems multi_tote rack_climbing \
-  --seeds 42 43 44 --split test --output outputs/data
+conda env create -f environment.yml
+conda activate olsf-trs
+pip install -e .
 ```
 
-Each instance folder contains `instance.npz` and `metadata.json`.
+A CPU installation also works (`pip install -e '.[test,plot]'`). `--device auto` selects CUDA when it
+is available. Exact subproblems use Gurobi with a valid licence (`--solver gurobi`) or SciPy/HiGHS
+(`--solver scipy`); `--solver auto` picks Gurobi when it is licensed. Run settings and software versions are saved in `manifest.json` or `config.json`.
 
-| Array | Contents |
+## Quick check
+
+```bash
+python -m pytest -q
+python main_train.py evaluate --instance L-1 --seeds 200042 200043 --methods C-SGH R3 G3 \
+  --output outputs/check_L1
+```
+
+## Experiments
+
+Run pretraining, MAPPO/IPPO training, and evaluation:
+
+```bash
+bash scripts/reproduce_paper.sh
+```
+
+| Step | Command | Output |
+| --- | --- | --- |
+| Pretraining | `pretrain --instances all-small --train-instances 1000 --val-instances 300` | `pretrain_*/model.pt`, `history.jsonl`, `demonstrations.csv` |
+| MAPPO and IPPO training | `train --instances all-large --initial-checkpoint ...` | `mappo_*/`, `ippo_*/` with `history.jsonl` |
+| Small-scale local gaps | `gap --instances all-small --seeds ...` | `gap_*/gap_runs.csv`, `gap_summary.csv` |
+| Large-scale results | `evaluate --instances all-large --methods MAPPO IPPO C-SGH R3 G3` | `eval_*/runs.csv`, `summary.csv` |
+
+`runs.csv` stores individual runs;
+`summary.csv` stores means, standard deviations and 95% confidence half-widths.
+
+## Settings
+
+Instance sizes and simulation parameters are in `olsf_trs/config.py`. The shared
+encoder uses 128 features, three ReZero layers and 12 attention heads.
+The centralized critic uses a spatial MLP, GRU and value head.
+
+Candidate grouping uses exact entity attributes within a decision state: equal
+order demand, priority and arrival time at the same station; equal tote SKU,
+inventory and position; or idle robots at the same position. `--no-quotient`
+keeps all entity identities separate.
+
+IPPO computes returns between consecutive decisions of the same role, accumulating
+intervening movement rewards with duration-aware discounting.
+
+Local gaps use shared expert states. Order and tote costs include movements and
+uncovered-unit penalties; robot costs use pickup trip seconds. Tote evaluation fixes
+the expert station and compares retrieval choices. Per-decision costs are saved in
+`gap_decisions.csv`. `module_ms` sums the evaluated role's inference time per instance.
+
+Evaluation summaries use the common completed seeds across methods and report
+attempted, completed and paired counts.
+
+## Files
+
+| File | Purpose |
 | --- | --- |
-| `demand` | Order quantities by SKU |
-| `tote_sku` | SKU index for each tote (one SKU per tote, several totes per SKU) |
-| `inventory` | Initial quantity in each tote |
-| `tote_positions` | Storage cell of each tote (metres; x longitudinal, y transverse, z level height) |
-| `station_positions` | Workstation coordinates (metres) |
-| `robot_positions` | Initial robot positions in the aisles (metres) |
-| `arrivals` | Order arrival times (seconds), Poisson process with rate N_o/10 orders per minute |
-| `priority` | Order priorities (1 to 3) |
+| `main_train.py` | Command-line entry for pretraining, training and evaluation |
+| `olsf_trs/mappo_training.py` | Expert pretraining, recurrent MAPPO and IPPO updates, rollouts and checkpoints |
+| `olsf_trs/mappo_models.py` | Centralized GRU critic for MAPPO and separate GRU critics for IPPO |
+| `bqnco_framework/encoder.py`, `attention.py` | BQ-NCO encoder and attention layers |
+| `bqnco_framework/role_policy.py` | Role policies for order, tote and robot decisions |
+| `olsf_trs/config.py` | S-1–S-9 and L-1–L-15 settings and instance generation logic |
+| `data/generate_instances.py` | Standalone instance export to `instance.npz` and `metadata.json` |
+| `olsf_trs/simulator.py` | Warehouse environment and state transitions |
+| `olsf_trs/baselines.py` | Expert solvers, C-SGH, R3 and G3 |
+| `olsf_trs/evaluation.py` | Policy evaluation and local gaps |
+| `scripts/reproduce_paper.sh` | Full pretraining, training and evaluation workflow |
+| `scripts/run_evaluation.py` | Evaluation command entry |
+| `scripts/visualize_training.py` | Training curves from saved logs |
+| `tests/` | Training, simulation and evaluation checks |
 
-The storage area consists of rack modules arranged along longitudinal and transverse
-aisles. Each module has `cells_per_module` cells on `rack_levels` levels; the number of
-modules is chosen so that the totes fill `storage_fill` of the storage locations. Both
-architectures use the same layout and tote positions for a given seed. Multi-tote robots
-carry up to four totes and reach levels with an onboard lift; rack-climbing robots carry
-one tote and climb the rack. The layout summary is saved in `metadata.json`.
+MAPPO and IPPO share the training module; select either with `--algorithm`.
+Training generates instances from the settings and seeds. The standalone generator
+exports instances for inspection or sharing; its files are not required to start training.
 
-Seed offsets for train, validation and test are 0, 100000 and 200000. Instance sizes and
-generation settings are defined in `olsf_trs/config.py`.
-
-```python
-import numpy as np
-
-instance = np.load("outputs/data/train/multi_tote/S-1/42/instance.npz")
-demand = instance["demand"]
+```bash
+python main_train.py train --algorithm MAPPO --instances S-1 --output outputs/mappo
+python main_train.py train --algorithm IPPO --instances S-1 --output outputs/ippo
+python data/generate_instances.py --instances all --seeds 42 --output outputs/data
 ```
+
+Training curves: `python scripts/visualize_training.py --run-dir outputs/paper/mappo_multi_tote --output curves.png`.
+
+Third-party code and licences are listed in `THIRD_PARTY_NOTICES.md`.
